@@ -1,0 +1,95 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- helpers ----------
+    function signedIn()   { return request.auth != null; }
+    function profilePath(){ return /databases/$(database)/documents/users/$(request.auth.uid); }
+    function hasProfile() { return signedIn() && exists(profilePath()); }
+    function isAdmin()    { return hasProfile() && get(profilePath()).data.role == 'admin'; }
+    function isStaff()    { return hasProfile() && get(profilePath()).data.role in ['admin', 'teacher']; }
+
+    // Today's date in Philippine time (UTC+8), "YYYY-MM-DD", computed from the SERVER clock.
+    function pad(n) { return (n < 10 ? '0' : '') + string(n); }
+    function manilaToday() {
+      let t = request.time + duration.value(8, 'h');
+      return string(t.year()) + '-' + pad(t.month()) + '-' + pad(t.day());
+    }
+
+    // ---------- staff accounts ----------
+    match /users/{uid} {
+      allow read:   if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow create: if isAdmin()
+                    && request.resource.data.role in ['admin', 'teacher']
+                    && request.resource.data.name is string
+                    && request.resource.data.email is string;
+      allow update: if isAdmin()
+                    && request.resource.data.role in ['admin', 'teacher']
+                    && (uid != request.auth.uid || request.resource.data.role == 'admin'); // can't demote yourself
+      allow delete: if isAdmin() && uid != request.auth.uid;                                 // can't remove yourself
+    }
+
+    // ---------- shared customization ----------
+    match /settings/{docId} {
+      allow read:  if isStaff();
+      allow write: if isAdmin();
+    }
+
+    // ---------- students (name/LRN/section only: teachers can read) ----------
+    function validStudent(d) {
+      return d.keys().hasOnly(['name', 'section', 'status', 'registeredDate', 'createdAt'])
+          && d.keys().hasAll(['name', 'section', 'status', 'registeredDate'])
+          && d.name is string && d.name.size() > 0 && d.name.size() <= 120
+          && d.section is string && d.section.size() > 0 && d.section.size() <= 60
+          && d.status in ['Active', 'Inactive']
+          && d.registeredDate is string && d.registeredDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+    }
+    match /students/{lrn} {
+      allow read:   if isStaff();
+      allow create: if isAdmin() && lrn.matches('^[0-9]{12}$') && validStudent(request.resource.data);
+      allow update: if isAdmin() && validStudent(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    // ---------- private student details (address, contact, guardian, photo): ADMIN ONLY ----------
+    function validDetails(d) {
+      return d.keys().hasOnly(['address', 'contact', 'guardian', 'adviser', 'principal', 'schoolYear', 'photo'])
+          && (!('photo' in d) || (d.photo is string && d.photo.size() < 250000));
+    }
+    match /studentDetails/{lrn} {
+      allow read:  if isAdmin();
+      allow write: if isAdmin() && validDetails(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    // ---------- QR secrets ----------
+    // Staff may GET a token only if they already hold it (i.e. they scanned it). Only admins can LIST/create/delete.
+    match /qrTokens/{token} {
+      allow get:    if isStaff();
+      allow list:   if isAdmin();
+      allow create: if isAdmin() && token.matches('^[A-Za-z0-9_-]{32}$')
+                    && request.resource.data.keys().hasOnly(['studentId', 'createdAt'])
+                    && request.resource.data.studentId is string;
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    // ---------- attendance ----------
+    // One document per student per day, create-only. The date must equal today's Philippine date
+    // according to the server, and scannedAt must be the server timestamp, so a wrong device clock
+    // cannot back-date or forward-date a record.
+    match /attendance/{recordId} {
+      allow read: if isStaff();
+      allow create: if isStaff()
+        && request.resource.data.keys().hasOnly(['studentId', 'name', 'section', 'date', 'status', 'scannedAt', 'scannedBy'])
+        && request.resource.data.status == 'Present'
+        && request.resource.data.scannedBy == request.auth.uid
+        && request.resource.data.scannedAt == request.time
+        && request.resource.data.date == manilaToday()
+        && recordId == request.resource.data.date + '_' + request.resource.data.studentId
+        && get(/databases/$(database)/documents/students/$(request.resource.data.studentId)).data.status == 'Active';
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+  }
+}
