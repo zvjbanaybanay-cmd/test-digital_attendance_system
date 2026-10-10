@@ -343,3 +343,7 @@ body.login-locked .app{visibility:hidden}
 .mode-tabs button{flex:1;min-width:150px;padding:12px 14px;border-radius:12px;border:2px solid #e2cdd2;background:#fff;color:#6f1025;font-weight:800;cursor:pointer}
 .mode-tabs button.active{background:#6f1025;border-color:#6f1025;color:#fff}
 #scanHint .link-btn{margin:0 0 0 4px}
+
+/* modals taller than the screen: scroll inside the box so ✕ and Save stay reachable */
+.modal-box{max-height:calc(100vh - 40px);overflow-y:auto}
+.modal{overflow-y:auto}
